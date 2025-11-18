@@ -58,7 +58,7 @@ This repository contains an **architecture diagram** and a **README** describing
 - `three-tier-app.service` — systemd unit for running the Node app as a service.
 
 -----
-[text](setup-steps.txt) 
+[setup-steps](setup-steps.txt) 
 
 -----
 
