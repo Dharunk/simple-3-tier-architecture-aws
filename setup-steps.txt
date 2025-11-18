@@ -1,0 +1,120 @@
+# SSH into web-server
+
+    ssh -i ~/keys/my-key.pem ec2-user@<web-public-ip>
+    sudo yum update -y 
+    sudo dnf install nginx -y   
+    sudo systemctl enable nginx
+    sudo systemctl start nginx
+
+## Create a simple proxy route to app-server (we’ll change after app deploy).
+
+    sudo tee /etc/nginx/conf.d/app.conf > /dev/null <<'EOF'
+    server {
+    listen 80;
+    location / {
+        proxy_pass http://10.0.3.10:3000;  # temp placeholder; replace with your app-server private IP
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+    }
+    EOF
+
+    sudo nginx -t
+    sudo systemctl reload nginx
+    
+    # this will forward to app (once app is running)
+        curl http://localhost/
+
+# Copy pem file from local machine to web-server
+
+    scp -i trail-e2.pem trail-e2.pem ec2-user@13.200.15.218:/home/ec2-user/
+
+## SSH into web-server then from there SSH into app-server (private).
+
+    ssh -i /home/ec2-user/my-key.pem ec2-user@<app-private-ip>
+
+    # on app-server
+    sudo yum update -y
+
+    # install Node 18
+    curl -sL https://rpm.nodesource.com/setup_18.x | sudo bash -
+    sudo yum install -y nodejs
+
+    # install mysql client
+    sudo yum install -y default-mysql-client  # or "mysql" depending on AMI
+
+    git clone https://github.com/Dharunk/simple-3-tier-architecture-aws.git
+
+    cd simple-3-tier-architecture-aws
+
+    npm install
+
+# Replace DB_HOST with the actual RDS endpoint from the RDS console. Replace DB credentials accordingly.
+
+    # Export env for testing: 
+        export $(cat /home/ec2-user/app/.env | xargs)
+        node server.js &   # quick test
+
+# Test from web-server:
+    curl http://<app-private-ip>:3000/
+    curl http://<app-private-ip>:3000/db
+
+## Initialize MySQL on RDS (create DB and user)
+
+    # on app-server
+
+    sudo yum install -y mysql   # if not installed
+    mysql -h <rds-endpoint> -u admin -p
+
+    # then in mysql client:
+        CREATE DATABASE demo;
+
+    # optionally create app user with limited privileges:
+        CREATE USER 'appuser'@'%' IDENTIFIED BY 'AppUserPassword123!';
+        GRANT ALL PRIVILEGES ON demo.* TO 'appuser'@'%';
+        FLUSH PRIVILEGES;
+        EXIT;
+
+    # Then update .env to use appuser / AppUserPassword and DB demo.
+
+# Configure Node app as a systemd service on Web-server
+
+    sudo vim ./etc/systemd/system/three-tier-app.service (check the file in repo)
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable three-tier-app
+    sudo systemctl start three-tier-app
+    sudo journalctl -u three-tier-app -f
+
+# Update Nginx (web-server) to reverse proxy to private app
+
+    # On web-server, edit sudo vim /etc/nginx/conf.d/app.conf (check the file in repo)
+    sudo nginx -t
+    sudo systemctl reload nginx
+
+# Test from your Machine:
+
+    curl http://<web-public-ip>/
+    # should return {"message":"Hello from App Tier"} proxied
+
+    curl http://<web-public-ip>/db
+    # should return DB timestamp result 
+
+    # From web-server:
+
+    curl http://<app-private-ip>:3000/db
+
+
+    # From app-server:
+
+    mysql -h <rds-endpoint> -u appuser -pAppUserPassword123! -e "SELECT NOW();"
+
+    Node app logs (sudo journalctl -u three-tier-app -n 200)
+
+
+# (Optional) Use ALB instead of single web EC2
+  If you want to scale, create an ALB (EC2 → Load Balancers → Create Application Load Balancer), 
+  put it in public subnets, target group contains web-server private IPs, security group for ALB allows HTTP from 0.0.0.0/0, and update SG-Web to accept from ALB SG instead of 0.0.0.0/0.
